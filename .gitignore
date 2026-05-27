@@ -1,0 +1,44 @@
+# Python
+__pycache__/
+*.pyc
+*.pyo
+*.egg-info/
+dist/
+build/
+venv/
+.venv/
+
+# Debug/dump artifacts
+debug_out.txt
+video_obj.txt
+images_section.txt
+router_data_full.txt
+related_api.json
+note_desktop.html
+note_desktop2.html
+note_desktop3.html
+note_desktop4.html
+note_main.html
+note_gif_debug.html
+note_as_video.html
+链接.txt
+
+# IDE / editor
+.vscode/
+.idea/
+*.swp
+*.swo
+.kotlin/
+
+# Android
+local.properties
+.gradle/
+app/build/
+.claude/
+*.apk
+*.aab
+
+# OS
+Thumbs.db
+Desktop.ini
+.DS_Store

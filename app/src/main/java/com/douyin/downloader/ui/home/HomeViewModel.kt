@@ -2,35 +2,32 @@ package com.douyin.downloader.ui.home
 
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
+import androidx.work.Data
+import androidx.work.OneTimeWorkRequestBuilder
+import androidx.work.WorkInfo
+import androidx.work.WorkManager
 import com.douyin.downloader.data.local.DownloadTaskDao
 import com.douyin.downloader.data.local.DownloadTaskEntity
 import com.douyin.downloader.data.local.HistoryDao
 import com.douyin.downloader.data.local.HistoryEntity
 import com.douyin.downloader.data.model.ContentInfo
-import com.douyin.downloader.domain.usecase.DownloadImagesUseCase
-import com.douyin.downloader.domain.usecase.DownloadVideoUseCase
-import com.douyin.downloader.domain.usecase.ParseUrlUseCase
-import com.douyin.downloader.domain.usecase.SynthesizeVideoUseCase
+import com.douyin.downloader.worker.DownloadWorker
 import dagger.hilt.android.lifecycle.HiltViewModel
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.launch
-import kotlinx.coroutines.sync.Semaphore
-import kotlinx.coroutines.sync.withPermit
 import org.json.JSONArray
-import java.util.concurrent.atomic.AtomicLong
+import java.util.UUID
 import javax.inject.Inject
 
 @HiltViewModel
 class HomeViewModel @Inject constructor(
-    private val parseUrlUseCase: ParseUrlUseCase,
-    private val downloadVideoUseCase: DownloadVideoUseCase,
-    private val downloadImagesUseCase: DownloadImagesUseCase,
-    private val synthesizeVideoUseCase: SynthesizeVideoUseCase,
+    private val parseUrlUseCase: com.douyin.downloader.domain.usecase.ParseUrlUseCase,
     private val historyDao: HistoryDao,
     private val downloadTaskDao: DownloadTaskDao,
+    private val workManager: WorkManager,
 ) : ViewModel() {
 
     enum class TaskStatus { PENDING, DOWNLOADING, DONE, ERROR }
@@ -41,6 +38,7 @@ class HomeViewModel @Inject constructor(
         val status: TaskStatus,
         val progress: Float? = null,
         val error: String? = null,
+        val workId: UUID? = null,
     )
 
     data class UiState(
@@ -59,8 +57,7 @@ class HomeViewModel @Inject constructor(
     private val _uiState = MutableStateFlow(UiState())
     val uiState: StateFlow<UiState> = _uiState.asStateFlow()
 
-    private val taskIdCounter = AtomicLong(0)
-    private val downloadSemaphore = Semaphore(2)
+    private var taskIdCounter = 0L
 
     init {
         viewModelScope.launch {
@@ -110,22 +107,55 @@ class HomeViewModel @Inject constructor(
         }
     }
 
-    private fun enqueueDownload(name: String, block: suspend (taskId: Long) -> Unit) {
-        val id = taskIdCounter.incrementAndGet()
-        val task = DownloadTask(id = id, name = name, status = TaskStatus.PENDING)
+    private fun enqueueDownload(data: Data, name: String) {
+        val taskId = ++taskIdCounter
+        val workRequest = OneTimeWorkRequestBuilder<DownloadWorker>()
+            .setInputData(data)
+            .addTag("download")
+            .build()
+
+        val task = DownloadTask(
+            id = taskId,
+            name = name,
+            status = TaskStatus.PENDING,
+            workId = workRequest.id,
+        )
         _uiState.update { it.copy(downloadTasks = it.downloadTasks + task) }
 
+        workManager.enqueue(workRequest)
+
+        // Observe work progress
         viewModelScope.launch {
-            downloadSemaphore.withPermit {
-                updateTask(id) { it.copy(status = TaskStatus.DOWNLOADING) }
-                try {
-                    block(id)
-                    updateTask(id) { it.copy(status = TaskStatus.DONE, progress = 1f) }
-                    downloadTaskDao.insert(DownloadTaskEntity(name = name, status = "DONE"))
-                    removeTask(id)
-                } catch (e: Exception) {
-                    updateTask(id) { it.copy(status = TaskStatus.ERROR, error = e.message) }
-                    downloadTaskDao.insert(DownloadTaskEntity(name = name, status = "ERROR", error = e.message))
+            workManager.getWorkInfoByIdFlow(workRequest.id).collect { workInfo ->
+                if (workInfo == null) return@collect
+
+                when (workInfo.state) {
+                    WorkInfo.State.ENQUEUED -> {
+                        updateTask(taskId) { it.copy(status = TaskStatus.PENDING) }
+                    }
+                    WorkInfo.State.RUNNING -> {
+                        val progress = workInfo.progress.getFloat(DownloadWorker.KEY_PROGRESS, -1f)
+                        updateTask(taskId) {
+                            it.copy(
+                                status = TaskStatus.DOWNLOADING,
+                                progress = if (progress >= 0f) progress else null,
+                            )
+                        }
+                    }
+                    WorkInfo.State.SUCCEEDED -> {
+                        updateTask(taskId) { it.copy(status = TaskStatus.DONE, progress = 1f) }
+                        downloadTaskDao.insert(DownloadTaskEntity(name = name, status = "DONE"))
+                        removeTask(taskId)
+                    }
+                    WorkInfo.State.FAILED -> {
+                        val error = workInfo.outputData.getString("error") ?: "下载失败"
+                        updateTask(taskId) { it.copy(status = TaskStatus.ERROR, error = error) }
+                        downloadTaskDao.insert(DownloadTaskEntity(name = name, status = "ERROR", error = error))
+                    }
+                    WorkInfo.State.CANCELLED -> {
+                        removeTask(taskId)
+                    }
+                    else -> {}
                 }
             }
         }
@@ -179,13 +209,13 @@ class HomeViewModel @Inject constructor(
             is ContentInfo.Animated -> "douyin_${info.id}.mp4"
             else -> "douyin_video.mp4"
         }
-        enqueueDownload("下载视频") { taskId ->
-            downloadVideoUseCase(videoUrl, filename) { downloaded, total ->
-                if (total != null) {
-                    updateTask(taskId) { it.copy(progress = downloaded.toFloat() / total) }
-                }
-            }
-        }
+        val data = DownloadWorker.buildData(
+            type = DownloadWorker.TYPE_VIDEO,
+            filename = filename,
+            name = "下载视频",
+            url = videoUrl,
+        )
+        enqueueDownload(data, "下载视频")
     }
 
     fun onDownloadCurrentImage() {
@@ -195,9 +225,13 @@ class HomeViewModel @Inject constructor(
         val url = images[state.galleryIndex]
         val id = getContentId(state.contentInfo)
 
-        enqueueDownload("下载图片") {
-            downloadImagesUseCase.downloadSingle(url, "douyin_${id}_${state.galleryIndex + 1}.jpg")
-        }
+        val data = DownloadWorker.buildData(
+            type = DownloadWorker.TYPE_IMAGE,
+            filename = "douyin_${id}_${state.galleryIndex + 1}.jpg",
+            name = "下载图片",
+            url = url,
+        )
+        enqueueDownload(data, "下载图片")
     }
 
     fun onDownloadSelectedImages() {
@@ -206,15 +240,16 @@ class HomeViewModel @Inject constructor(
         if (images.isEmpty()) return
         val selected = state.selectedImages.sorted()
         if (selected.isEmpty()) return
-        val urls = selected.map { images[it] }
-        val filenames = selected.map { "douyin_${getContentId(state.contentInfo)}_${it + 1}.jpg" }
+        val urls = selected.map { images[it] }.toTypedArray()
         val total = urls.size
 
-        enqueueDownload("下载图片 $total 张") { taskId ->
-            downloadImagesUseCase.downloadMultiple(urls, filenames) { completed, _ ->
-                updateTask(taskId) { it.copy(progress = completed.toFloat() / total) }
-            }
-        }
+        val data = DownloadWorker.buildData(
+            type = DownloadWorker.TYPE_ZIP,
+            filename = "douyin_${getContentId(state.contentInfo)}",
+            name = "下载图片 $total 张",
+            urls = urls,
+        )
+        enqueueDownload(data, "下载图片 $total 张")
         _uiState.update { it.copy(selectedImages = emptySet()) }
     }
 
@@ -235,18 +270,29 @@ class HomeViewModel @Inject constructor(
         }
         val id = getContentId(info)
 
-        enqueueDownload("合成视频") {
-            synthesizeVideoUseCase.fromImages(images, musicUrl, duration, "douyin_${id}.mp4")
-        }
+        val data = DownloadWorker.buildData(
+            type = DownloadWorker.TYPE_SYNTHESIZE,
+            filename = "douyin_${id}.mp4",
+            name = "合成视频",
+            urls = images.toTypedArray(),
+            musicUrl = musicUrl,
+            duration = duration,
+        )
+        enqueueDownload(data, "合成视频")
     }
 
     fun onMergeAnimatedVideo() {
         val info = _uiState.value.contentInfo as? ContentInfo.Animated ?: return
         if (info.videoUrl.isEmpty()) return
 
-        enqueueDownload("合并音乐") {
-            synthesizeVideoUseCase.mergeWithMusic(info.videoUrl, info.musicUrl, "douyin_${info.id}.mp4")
-        }
+        val data = DownloadWorker.buildData(
+            type = DownloadWorker.TYPE_MERGE,
+            filename = "douyin_${info.id}.mp4",
+            name = "合并音乐",
+            url = info.videoUrl,
+            musicUrl = info.musicUrl,
+        )
+        enqueueDownload(data, "合并音乐")
     }
 
     fun onHistoryItemClicked(entity: HistoryEntity) {

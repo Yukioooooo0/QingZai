@@ -44,19 +44,28 @@ class DouyinApi @Inject constructor(private val client: OkHttpClient) {
 
     suspend fun downloadBytes(url: String, timeoutSeconds: Int = 30): ByteArray =
         withContext(Dispatchers.IO) {
-            val request = Request.Builder()
-                .url(url)
-                .header("User-Agent", USER_AGENT)
-                .header("Referer", REFERER)
-                .build()
-            client.newBuilder()
-                .connectTimeout(timeoutSeconds.toLong(), java.util.concurrent.TimeUnit.SECONDS)
-                .readTimeout(timeoutSeconds.toLong(), java.util.concurrent.TimeUnit.SECONDS)
-                .build()
-                .newCall(request).execute().use { response ->
-                    if (!response.isSuccessful) throw Exception("HTTP ${response.code}")
-                    response.body?.bytes() ?: throw Exception("空响应")
+            var lastException: Exception? = null
+            repeat(3) { attempt ->
+                try {
+                    val request = Request.Builder()
+                        .url(url)
+                        .header("User-Agent", USER_AGENT)
+                        .header("Referer", REFERER)
+                        .build()
+                    return@withContext client.newBuilder()
+                        .connectTimeout(timeoutSeconds.toLong(), java.util.concurrent.TimeUnit.SECONDS)
+                        .readTimeout(timeoutSeconds.toLong(), java.util.concurrent.TimeUnit.SECONDS)
+                        .build()
+                        .newCall(request).execute().use { response ->
+                            if (!response.isSuccessful) throw Exception("HTTP ${response.code}")
+                            response.body?.bytes() ?: throw Exception("空响应")
+                        }
+                } catch (e: java.net.SocketException) {
+                    lastException = e
+                    if (attempt < 2) Thread.sleep(1000L * (attempt + 1))
                 }
+            }
+            throw lastException ?: Exception("下载失败")
         }
 
     suspend fun downloadWithProgress(
@@ -91,28 +100,40 @@ class DouyinApi @Inject constructor(private val client: OkHttpClient) {
         output: java.io.OutputStream,
         onProgress: (downloaded: Long, total: Long?) -> Unit = { _, _ -> },
     ): Long = withContext(Dispatchers.IO) {
-        val request = Request.Builder()
-            .url(url)
-            .header("User-Agent", USER_AGENT)
-            .header("Referer", REFERER)
-            .build()
-        client.newBuilder()
-            .readTimeout(120, java.util.concurrent.TimeUnit.SECONDS)
-            .build()
-            .newCall(request).execute().use { response ->
-                if (!response.isSuccessful) throw Exception("HTTP ${response.code}")
-                val body = response.body ?: throw Exception("空响应")
-                val total = body.contentLength().takeIf { it != -1L }
-                val input = body.byteStream()
-                val buffer = ByteArray(8192)
-                var downloaded = 0L
-                var read: Int
-                while (input.read(buffer).also { read = it } != -1) {
-                    output.write(buffer, 0, read)
-                    downloaded += read
-                    onProgress(downloaded, total)
+        var lastException: Exception? = null
+        repeat(3) { attempt ->
+            try {
+                val request = Request.Builder()
+                    .url(url)
+                    .header("User-Agent", USER_AGENT)
+                    .header("Referer", REFERER)
+                    .build()
+                return@withContext client.newBuilder()
+                    .readTimeout(120, java.util.concurrent.TimeUnit.SECONDS)
+                    .build()
+                    .newCall(request).execute().use { response ->
+                        if (!response.isSuccessful) throw Exception("HTTP ${response.code}")
+                        val body = response.body ?: throw Exception("空响应")
+                        val total = body.contentLength().takeIf { it != -1L }
+                        val input = body.byteStream()
+                        val buffer = ByteArray(8192)
+                        var downloaded = 0L
+                        var read: Int
+                        while (input.read(buffer).also { read = it } != -1) {
+                            output.write(buffer, 0, read)
+                            downloaded += read
+                            onProgress(downloaded, total)
+                        }
+                        downloaded
+                    }
+            } catch (e: java.net.SocketException) {
+                lastException = e
+                if (attempt < 2) {
+                    Thread.sleep(1000L * (attempt + 1))
+                    output.flush()
                 }
-                downloaded
             }
+        }
+        throw lastException ?: Exception("下载失败")
     }
 }

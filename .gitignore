@@ -42,3 +42,6 @@ app/build/
 Thumbs.db
 Desktop.ini
 .DS_Store
+
+# BUG
+BUG.txt

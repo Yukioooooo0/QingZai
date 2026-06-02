@@ -14,11 +14,11 @@ android {
         applicationId = "com.douyin.downloader"
         minSdk = 26
         targetSdk = 35
-        versionCode = 4
+        versionCode = 5
         ndk {
             abiFilters += listOf("arm64-v8a")
         }
-        versionName = "1.0.4"
+        versionName = "1.1.0"
     }
 
     buildTypes {

@@ -61,13 +61,6 @@ class DownloadWorker @AssistedInject constructor(
                         showNotification(name, progress)
                     }
                 }
-                TYPE_SYNTHESIZE -> {
-                    val urls = inputData.getStringArray(KEY_URLS) ?: return Result.failure()
-                    val musicUrl = inputData.getString(KEY_MUSIC_URL)
-                    val duration = inputData.getInt(KEY_DURATION, 0)
-                    synthesizeVideoUseCase.fromImages(urls.toList(), musicUrl, duration, filename)
-                    setProgressAsync(Data.Builder().putFloat(KEY_PROGRESS, 1f).build())
-                }
                 TYPE_MERGE -> {
                     val url = inputData.getString(KEY_URL) ?: return Result.failure()
                     val musicUrl = inputData.getString(KEY_MUSIC_URL)
@@ -136,14 +129,12 @@ class DownloadWorker @AssistedInject constructor(
         const val KEY_URLS = "urls"
         const val KEY_FILENAME = "filename"
         const val KEY_MUSIC_URL = "music_url"
-        const val KEY_DURATION = "duration"
         const val KEY_NAME = "name"
         const val KEY_PROGRESS = "progress"
 
         const val TYPE_VIDEO = "video"
         const val TYPE_IMAGE = "image"
         const val TYPE_ZIP = "zip"
-        const val TYPE_SYNTHESIZE = "synthesize"
         const val TYPE_MERGE = "merge"
 
         fun buildData(
@@ -153,7 +144,6 @@ class DownloadWorker @AssistedInject constructor(
             url: String? = null,
             urls: Array<String>? = null,
             musicUrl: String? = null,
-            duration: Int = 0,
         ): Data {
             val builder = Data.Builder()
                 .putString(KEY_TYPE, type)
@@ -162,7 +152,6 @@ class DownloadWorker @AssistedInject constructor(
             url?.let { builder.putString(KEY_URL, it) }
             urls?.let { arr -> builder.putStringArray(KEY_URLS, Array<String?>(arr.size) { arr[it] }) }
             musicUrl?.let { builder.putString(KEY_MUSIC_URL, it) }
-            if (duration > 0) builder.putInt(KEY_DURATION, duration)
             return builder.build()
         }
     }

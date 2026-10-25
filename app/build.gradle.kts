@@ -78,6 +78,8 @@ dependencies {
 
     // OkHttp
     implementation("com.squareup.okhttp3:okhttp:4.12.0")
+    // 提供 JavaNetCookieJar，用于持久化抖音下发的 ttwid cookie
+    implementation("com.squareup.okhttp3:okhttp-urlconnection:4.12.0")
 
     // Coil
     implementation("io.coil-kt:coil-compose:2.7.0")

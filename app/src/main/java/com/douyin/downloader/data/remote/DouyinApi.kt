@@ -31,16 +31,35 @@ class DouyinApi @Inject constructor(private val client: OkHttpClient) {
     }
 
     suspend fun fetchPage(url: String): String = withContext(Dispatchers.IO) {
+        // 抖音 SSR 依赖 ttwid cookie：首次无 cookie 的请求只会返回空壳（无视频数据），
+        // 但响应会 Set-Cookie 下发 ttwid（由 CookieJar 自动保存）。带上 cookie 重试一次即可拿到完整数据。
+        var last = ""
+        repeat(2) {
+            last = doFetchPage(url)
+            if (hasContent(last)) {
+                return@withContext last
+            }
+        }
+        throw Exception("页面未返回有效数据")
+    }
+
+    private fun doFetchPage(url: String): String {
         val request = Request.Builder()
             .url(url)
             .header("User-Agent", USER_AGENT)
             .header("Referer", REFERER)
             .build()
-        client.newCall(request).execute().use { response ->
+        return client.newCall(request).execute().use { response ->
             if (!response.isSuccessful) throw Exception("HTTP ${response.code}")
             response.body?.string() ?: throw Exception("空响应")
         }
     }
+
+    private fun hasContent(html: String): Boolean =
+        html.contains("videoInfoRes") ||
+            html.contains("item_list") ||
+            html.contains("playwm") ||
+            html.contains("play_addr")
 
     suspend fun downloadBytes(url: String, timeoutSeconds: Int = 30): ByteArray =
         withContext(Dispatchers.IO) {

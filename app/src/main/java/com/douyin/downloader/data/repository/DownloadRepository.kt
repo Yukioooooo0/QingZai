@@ -10,6 +10,8 @@ import com.arthenica.ffmpegkit.FFmpegKit
 import com.douyin.downloader.data.remote.DouyinApi
 import dagger.hilt.android.qualifiers.ApplicationContext
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.sync.Mutex
+import kotlinx.coroutines.sync.withLock
 import kotlinx.coroutines.withContext
 import java.io.ByteArrayInputStream
 import java.io.File
@@ -23,6 +25,9 @@ class DownloadRepository @Inject constructor(
     @ApplicationContext private val context: Context,
     private val api: DouyinApi,
 ) {
+    // FFmpegKit 是重 CPU 操作：全局串行化，避免多个合成任务同时编码互相拖慢（实测并发 6 个时每个仅 ~0.2x 速度）
+    private val ffmpegMutex = Mutex()
+
     suspend fun saveVideo(bytes: ByteArray, filename: String): Uri =
         saveToMediaStore(bytes, filename, "video/mp4", MediaStore.Downloads.EXTERNAL_CONTENT_URI)
 
@@ -57,51 +62,6 @@ class DownloadRepository @Inject constructor(
             saveToMediaStore(buf.toByteArray(), filename, "application/zip", MediaStore.Downloads.EXTERNAL_CONTENT_URI)
         }
 
-    suspend fun synthesizeVideo(
-        imageUrls: List<String>,
-        musicUrl: String?,
-        duration: Int,
-        filename: String,
-    ): Uri = withContext(Dispatchers.IO) {
-        val tmpDir = File(context.cacheDir, "dy_${System.currentTimeMillis()}")
-        tmpDir.mkdirs()
-
-        try {
-            val imgPaths = imageUrls.mapIndexed { i, url ->
-                val bytes = api.downloadBytes(url)
-                val ext = inferImageExt(url)
-                val file = File(tmpDir, "img_$i$ext")
-                file.writeBytes(bytes)
-                file.absolutePath
-            }
-
-            val musicPath = musicUrl?.let {
-                val bytes = api.downloadBytes(it)
-                val file = File(tmpDir, "music.mp3")
-                file.writeBytes(bytes)
-                file.absolutePath
-            }
-
-            val outputFile = File(tmpDir, "output.mp4")
-            val actualDuration = if (duration > 0) duration else 10
-            val command = if (imgPaths.size == 1) {
-                buildSingleImageCommand(imgPaths[0], musicPath, actualDuration, outputFile.absolutePath)
-            } else {
-                buildSlideshowCommand(tmpDir, imgPaths, musicPath, actualDuration, outputFile.absolutePath)
-            }
-
-            val session = FFmpegKit.execute(command)
-            if (session.returnCode.isValueError) {
-                throw Exception("ffmpeg 失败: ${session.output.takeLast(500)}")
-            }
-
-            val bytes = outputFile.readBytes()
-            saveToMediaStore(bytes, filename, "video/mp4", MediaStore.Downloads.EXTERNAL_CONTENT_URI)
-        } finally {
-            tmpDir.deleteRecursively()
-        }
-    }
-
     suspend fun mergeVideoMusic(
         videoUrl: String,
         musicUrl: String?,
@@ -127,7 +87,7 @@ class DownloadRepository @Inject constructor(
                 "-c:v copy -c:a aac -b:a 192k -map 0:v:0 -map 1:a:0 -shortest " +
                 outputFile.absolutePath
 
-            val session = FFmpegKit.execute(command)
+            val session = ffmpegMutex.withLock { FFmpegKit.execute(command) }
             if (session.returnCode.isValueError) {
                 throw Exception("ffmpeg 合并失败: ${session.output.takeLast(500)}")
             }
@@ -137,45 +97,6 @@ class DownloadRepository @Inject constructor(
         } finally {
             tmpDir.deleteRecursively()
         }
-    }
-
-    private fun buildSingleImageCommand(
-        imgPath: String,
-        musicPath: String?,
-        duration: Int,
-        outputPath: String,
-    ): String {
-        val sb = StringBuilder()
-        sb.append("-y -loop 1 -i $imgPath ")
-        if (musicPath != null) sb.append("-i $musicPath ")
-        sb.append("-c:v libopenh264 -c:a aac -b:a 192k -pix_fmt yuv420p ")
-        sb.append("-t $duration -shortest $outputPath")
-        return sb.toString()
-    }
-
-    private fun buildSlideshowCommand(
-        tmpDir: File,
-        imgPaths: List<String>,
-        musicPath: String?,
-        duration: Int,
-        outputPath: String,
-    ): String {
-        val perImage = maxOf(duration.toDouble() / imgPaths.size, 2.0)
-        val concatFile = File(tmpDir, "concat.txt")
-        concatFile.bufferedWriter().use { writer ->
-            imgPaths.forEach { path ->
-                writer.write("file '$path'\n")
-                writer.write("duration $perImage\n")
-            }
-            writer.write("file '${imgPaths.last()}'\n")
-        }
-
-        val sb = StringBuilder()
-        sb.append("-y -f concat -safe 0 -i ${concatFile.absolutePath} ")
-        if (musicPath != null) sb.append("-i $musicPath ")
-        sb.append("-c:v libopenh264 -pix_fmt yuv420p -c:a aac -b:a 192k ")
-        sb.append("-t $duration -shortest $outputPath")
-        return sb.toString()
     }
 
     private fun saveToMediaStore(

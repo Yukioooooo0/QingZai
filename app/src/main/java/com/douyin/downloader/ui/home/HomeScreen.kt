@@ -180,10 +180,6 @@ fun HomeScreen(
                                 viewModel.onDownloadCurrentImage()
                                 onNavigateToDownloads()
                             },
-                            onSynthesizeVideo = {
-                                viewModel.onSynthesizeVideo()
-                                onNavigateToDownloads()
-                            },
                             onMergeAnimatedVideo = {
                                 viewModel.onMergeAnimatedVideo()
                                 onNavigateToDownloads()
@@ -248,7 +244,6 @@ private fun ResultContent(
     onSelectAll: () -> Unit,
     onDownloadVideo: () -> Unit,
     onDownloadCurrentImage: () -> Unit,
-    onSynthesizeVideo: () -> Unit,
     onMergeAnimatedVideo: () -> Unit,
 ) {
     when (info) {
@@ -262,7 +257,6 @@ private fun ResultContent(
                 selectedImages = selectedImages,
                 onImageToggled = onImageToggled,
                 onSelectAll = onSelectAll,
-                onSynthesizeVideo = onSynthesizeVideo,
             )
         }
         is ContentInfo.Animated -> {
@@ -275,7 +269,6 @@ private fun ResultContent(
                     selectedImages = selectedImages,
                     onImageToggled = onImageToggled,
                     onSelectAll = onSelectAll,
-                    onSynthesizeVideo = onSynthesizeVideo,
                 )
             }
         }
@@ -365,7 +358,6 @@ private fun ImageGridResult(
     selectedImages: Set<Int>,
     onImageToggled: (Int) -> Unit,
     onSelectAll: () -> Unit,
-    onSynthesizeVideo: () -> Unit,
 ) {
     Column {
         // Header
@@ -406,13 +398,13 @@ private fun ImageGridResult(
             Spacer(modifier = Modifier.height(8.dp))
         }
 
-        // Grid with capsule synthesize button overlay
+        // Grid
         Box(modifier = Modifier.weight(1f)) {
             LazyVerticalGrid(
                 columns = GridCells.Fixed(2),
                 horizontalArrangement = Arrangement.spacedBy(8.dp),
                 verticalArrangement = Arrangement.spacedBy(8.dp),
-                contentPadding = PaddingValues(bottom = 80.dp),
+                contentPadding = PaddingValues(bottom = 16.dp),
             ) {
                 itemsIndexed(images) { index, imageUrl ->
                     MediaGridCard(
@@ -421,20 +413,6 @@ private fun ImageGridResult(
                         onClick = { onImageToggled(index) },
                         isVideo = false,
                     )
-                }
-            }
-
-            // Capsule button at bottom-left
-            if (info is ContentInfo.ImageGallery || info is ContentInfo.Animated) {
-                Button(
-                    onClick = onSynthesizeVideo,
-                    modifier = Modifier
-                        .align(Alignment.BottomStart)
-                        .padding(bottom = 8.dp),
-                    shape = RoundedCornerShape(50),
-                    contentPadding = PaddingValues(horizontal = 20.dp, vertical = 8.dp),
-                ) {
-                    Text("合成视频", style = MaterialTheme.typography.labelLarge)
                 }
             }
         }

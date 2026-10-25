@@ -3,6 +3,7 @@ package com.douyin.downloader.ui.home
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
 import androidx.work.Data
+import androidx.work.ExistingWorkPolicy
 import androidx.work.OneTimeWorkRequestBuilder
 import androidx.work.WorkInfo
 import androidx.work.WorkManager
@@ -39,6 +40,7 @@ class HomeViewModel @Inject constructor(
         val progress: Float? = null,
         val error: String? = null,
         val workId: UUID? = null,
+        val uniqueName: String? = null,
     )
 
     data class UiState(
@@ -107,7 +109,16 @@ class HomeViewModel @Inject constructor(
         }
     }
 
-    private fun enqueueDownload(data: Data, name: String) {
+    private fun enqueueDownload(data: Data, name: String, uniqueName: String? = null) {
+        // 去重：同一内容的同类任务已在运行/排队则跳过（防止重复点击堆积成多个 FFmpeg 任务）
+        if (uniqueName != null && _uiState.value.downloadTasks.any {
+                (it.status == TaskStatus.PENDING || it.status == TaskStatus.DOWNLOADING) &&
+                    it.uniqueName == uniqueName
+            }
+        ) {
+            return
+        }
+
         val taskId = ++taskIdCounter
         val workRequest = OneTimeWorkRequestBuilder<DownloadWorker>()
             .setInputData(data)
@@ -119,10 +130,15 @@ class HomeViewModel @Inject constructor(
             name = name,
             status = TaskStatus.PENDING,
             workId = workRequest.id,
+            uniqueName = uniqueName,
         )
         _uiState.update { it.copy(downloadTasks = it.downloadTasks + task) }
 
-        workManager.enqueue(workRequest)
+        if (uniqueName != null) {
+            workManager.enqueueUniqueWork(uniqueName, ExistingWorkPolicy.KEEP, workRequest)
+        } else {
+            workManager.enqueue(workRequest)
+        }
 
         // Observe work progress
         viewModelScope.launch {
@@ -215,7 +231,7 @@ class HomeViewModel @Inject constructor(
             name = "下载视频",
             url = videoUrl,
         )
-        enqueueDownload(data, "下载视频")
+        enqueueDownload(data, "下载视频", uniqueName = "video_${info.id}")
     }
 
     fun onDownloadCurrentImage() {
@@ -231,7 +247,7 @@ class HomeViewModel @Inject constructor(
             name = "下载图片",
             url = url,
         )
-        enqueueDownload(data, "下载图片")
+        enqueueDownload(data, "下载图片", uniqueName = "image_${id}_${state.galleryIndex + 1}")
     }
 
     fun onDownloadSelectedImages() {
@@ -249,36 +265,8 @@ class HomeViewModel @Inject constructor(
             name = "下载图片 $total 张",
             urls = urls,
         )
-        enqueueDownload(data, "下载图片 $total 张")
+        enqueueDownload(data, "下载图片 $total 张", uniqueName = "zip_${getContentId(state.contentInfo)}")
         _uiState.update { it.copy(selectedImages = emptySet()) }
-    }
-
-    fun onSynthesizeVideo() {
-        val info = _uiState.value.contentInfo
-        val images = getImages(info)
-        if (images.isEmpty()) return
-
-        val musicUrl = when (info) {
-            is ContentInfo.ImageGallery -> info.musicUrl
-            is ContentInfo.Animated -> info.musicUrl
-            else -> null
-        }
-        val duration = when (info) {
-            is ContentInfo.ImageGallery -> info.duration
-            is ContentInfo.Animated -> info.duration
-            else -> 0
-        }
-        val id = getContentId(info)
-
-        val data = DownloadWorker.buildData(
-            type = DownloadWorker.TYPE_SYNTHESIZE,
-            filename = "douyin_${id}.mp4",
-            name = "合成视频",
-            urls = images.toTypedArray(),
-            musicUrl = musicUrl,
-            duration = duration,
-        )
-        enqueueDownload(data, "合成视频")
     }
 
     fun onMergeAnimatedVideo() {
@@ -292,7 +280,7 @@ class HomeViewModel @Inject constructor(
             url = info.videoUrl,
             musicUrl = info.musicUrl,
         )
-        enqueueDownload(data, "合并音乐")
+        enqueueDownload(data, "合并音乐", uniqueName = "merge_${info.id}")
     }
 
     fun onHistoryItemClicked(entity: HistoryEntity) {

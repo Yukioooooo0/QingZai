@@ -11,8 +11,10 @@ import dagger.Provides
 import dagger.hilt.InstallIn
 import dagger.hilt.android.qualifiers.ApplicationContext
 import dagger.hilt.components.SingletonComponent
+import okhttp3.JavaNetCookieJar
 import okhttp3.OkHttpClient
 import okhttp3.Protocol
+import java.net.CookieManager
 import java.util.concurrent.TimeUnit
 import javax.inject.Singleton
 
@@ -28,6 +30,9 @@ object AppModule {
         .readTimeout(60, TimeUnit.SECONDS)
         .followRedirects(true)
         .followSslRedirects(true)
+        // 持久化 cookie：抖音 SSR 依赖 ttwid，首次请求会通过 Set-Cookie 下发，
+        // 后续请求必须带上它才能拿到完整视频数据。
+        .cookieJar(JavaNetCookieJar(CookieManager()))
         .build()
 
     @Provides

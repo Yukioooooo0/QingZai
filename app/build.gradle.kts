@@ -14,16 +14,19 @@ android {
         applicationId = "com.douyin.downloader"
         minSdk = 26
         targetSdk = 35
-        versionCode = 5
+        versionCode = 6
         ndk {
             abiFilters += listOf("arm64-v8a")
         }
-        versionName = "1.1.0"
+        versionName = "1.2.0"
     }
 
     buildTypes {
         release {
-            isMinifyEnabled = true
+            // 关闭混淆，避免第三方库反射类被裁掉导致运行时崩溃
+            isMinifyEnabled = false
+            // 使用 debug 签名，便于侧载安装（个人分发用）
+            signingConfig = signingConfigs.getByName("debug")
             proguardFiles(
                 getDefaultProguardFile("proguard-android-optimize.txt"),
                 "proguard-rules.pro"
@@ -48,6 +51,12 @@ android {
         jniLibs {
             pickFirsts += "**/libc++_shared.so"
         }
+    }
+
+    lint {
+        // Kotlin 2.1 + AGP 8.7 的 lint 存在兼容性 bug 会误报崩溃，release 构建跳过 lint
+        checkReleaseBuilds = false
+        abortOnError = false
     }
 }
 
